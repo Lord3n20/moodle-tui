@@ -26,13 +26,13 @@ class Fake:
 
 A.Moodle = lambda: Fake()
 A.STATE_DIR = A.CACHE_DIR / "test-state"
+SP = sys.argv[1]
 
 async def main():
     app = A.MoodleApp()
     async with app.run_test(size=(140, 40)) as pilot:
         await pilot.pause(1)
-        app.save_screenshot("home.svg", path="/tmp/claude-1000/-home-enzo/6fda36b0-e3b2-443b-afde-90e25f070e64/scratchpad")
-        SP = "/tmp/claude-1000/-home-enzo/6fda36b0-e3b2-443b-afde-90e25f070e64/scratchpad"
+        app.save_screenshot("home.svg", path=SP)
         await pilot.press("enter"); await pilot.pause(1)
         app.save_screenshot("course.svg", path=SP)
         await pilot.press("down", "enter"); await pilot.pause(1)

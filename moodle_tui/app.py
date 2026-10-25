@@ -579,6 +579,7 @@ class MoodleApp(ChatMixin, App):
         self.init_chat()
 
     def on_mount(self):
+        self.theme = "ansi-dark"  # Farben und Hintergrund vom Terminal übernehmen
         self.push_screen(HomeScreen())
 
     def fail(self, e):
