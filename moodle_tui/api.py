@@ -68,7 +68,8 @@ class Moodle:
         """Ruft eine Webservice-Funktion auf; bei Netzfehlern gibt es die letzte Antwort aus dem Cache."""
         key = hashlib.md5(json.dumps(params, sort_keys=True).encode()).hexdigest()[:10]
         cache = CACHE_DIR / "json" / f"{function}-{key}.json"
-        data = {"wstoken": self.token, "wsfunction": function, "moodlewsrestformat": "json", **_flatten(params)}
+        data = {"wstoken": self.token, "wsfunction": function, "moodlewsrestformat": "json",
+                "moodlewssettingfilter": "true", "moodlewssettinglang": "de", **_flatten(params)}
         try:
             r = self.session.post(f"{SITE}/webservice/rest/server.php", data=data, timeout=20)
             r.raise_for_status()
@@ -94,7 +95,7 @@ class Moodle:
     # --- Übersicht -------------------------------------------------------
 
     def courses(self):
-        res = self.call("core_course_get_enrolled_courses_by_timeline_classification", classification="inprogress")
+        res = self.call("core_course_get_enrolled_courses_by_timeline_classification", classification="inprogress", sort="fullname")
         return sorted(res["courses"], key=lambda c: c["fullname"].lower())
 
     def deadlines(self, days=60):
@@ -103,7 +104,7 @@ class Moodle:
             "core_calendar_get_action_events_by_timesort",
             timesortfrom=now - 86400,
             timesortto=now + days * 86400,
-            limittonum=50,
+            limitnum=50,
         )
         return res["events"]
 

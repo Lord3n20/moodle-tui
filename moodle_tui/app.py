@@ -1,5 +1,6 @@
 """Textual-Oberfläche: Übersicht (Kurse, Fristen, Mitteilungen) und Kursansicht."""
 
+import html
 import json
 import re
 import subprocess
@@ -30,6 +31,11 @@ def html_to_md(html):
     h.body_width = 0
     h.ignore_images = True
     return h.handle(html).strip()
+
+
+def txt(value):
+    """Namen kommen mit HTML-Entities (&amp;) – für die Anzeige dekodieren und escapen."""
+    return escape(html.unescape(value or ""))
 
 
 def fmt_time(ts, relative=False):
@@ -160,7 +166,7 @@ class HomeScreen(Screen):
         lv.clear()
         for c in courses:
             n = new_counts.get(c["id"], 0)
-            label = escape(c["fullname"]) + (f"  [b yellow]{NEW} {n}[/]" if n else "")
+            label = txt(c["shortname"]) + (f"  [b yellow]{NEW} {n}[/]" if n else "")
             lv.append(ListItem(Label(Text.from_markup(label))))
         if courses:
             lv.index = min(index, len(courses) - 1)
@@ -173,7 +179,7 @@ class HomeScreen(Screen):
             due = fmt_time(ev["timesort"], relative=True)
             if ev["timesort"] - time.time() < 2 * 86400:
                 due = f"[b red]{due}[/]"
-            table.add_row(due, escape(ev["course"]["shortname"]) if ev.get("course") else "", escape(ev["name"]))
+            table.add_row(due, txt(ev["course"]["shortname"]) if ev.get("course") else "", txt(ev["name"]))
         if not events:
             self.query_one("#detail", Markdown).update("_Keine anstehenden Fristen._")
 
@@ -184,7 +190,7 @@ class HomeScreen(Screen):
         unread = 0
         for n in notes:
             unread += not n["read"]
-            table.add_row("" if n["read"] else NEW, fmt_time(n["timecreated"]), escape(n["subject"]))
+            table.add_row("" if n["read"] else NEW, fmt_time(n["timecreated"]), txt(n["subject"]))
         tab = self.query_one("#tabs", TabbedContent).get_tab("tab-notifications")
         tab.label = f"Mitteilungen ({unread})" if unread else "Mitteilungen"
 
@@ -267,7 +273,7 @@ class CourseScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Horizontal():
-            yield Tree(self.course["fullname"], id="tree")
+            yield Tree(txt(self.course["shortname"]), id="tree")
             with VerticalScroll(id="detail-box"):
                 yield Markdown("_Lade Kurs …_", id="detail")
         yield Footer()
@@ -294,38 +300,57 @@ class CourseScreen(Screen):
     def build_tree(self, sections, assignments):
         self.sections, self.assignments = sections, assignments
         self.new = self.app.seen.new_modules(self.course["id"], sections)
+        self.subsections = {s["itemid"]: s for s in sections if s.get("component") == "mod_subsection"}
+        self.focus_node = None
         tree = self.query_one("#tree", Tree)
         tree.clear()
-        focus_node = None
         for sec in sections:
+            if sec.get("component") == "mod_subsection":
+                continue
             modules = [m for m in sec.get("modules", []) if m.get("uservisible", True)]
             if not modules and not sec.get("summary"):
                 continue
-            has_new = any(m["id"] in self.new for m in modules)
-            sec_label = escape(sec.get("name") or "Allgemein") + (f" [yellow]{NEW}[/]" if has_new else "")
+            has_new = any(m["id"] in self.new for m in self.all_modules(modules))
+            sec_label = txt(sec.get("name") or "Allgemein") + (f" [yellow]{NEW}[/]" if has_new else "")
             sec_node = tree.root.add(sec_label, data={"kind": "section", "section": sec},
                                      expand=has_new or sec is sections[0])
             for m in modules:
-                node = self.add_module(sec_node, m)
-                if m["id"] == self.focus_cmid:
-                    focus_node = node
+                self.add_module(sec_node, m)
+        focus_node = self.focus_node
         if focus_node:
-            focus_node.parent.expand()
+            parent = focus_node.parent
+            while parent:
+                parent.expand()
+                parent = parent.parent
             self.call_after_refresh(tree.move_cursor, focus_node)
         else:
             tree.cursor_line = 0
         self.query_one("#detail", Markdown).update(
-            f"## {self.course['fullname']}\n\n"
+            f"## {html.unescape(self.course['shortname'])}\n\n"
             + (f"**{len(self.new)} neue/geänderte Einträge** ({NEW})\n\n" if self.new else "")
             + "_Enter: öffnen · o: im Browser · a: alles als gesehen markieren · Esc: zurück_")
 
+    def all_modules(self, modules):
+        """Module eines Abschnitts inklusive der in Unterabschnitten."""
+        for m in modules:
+            yield m
+            if m["modname"] == "subsection" and m["instance"] in self.subsections:
+                yield from self.all_modules(self.subsections[m["instance"]].get("modules", []))
+
     def add_module(self, parent, m):
+        node = self._add_module(parent, m)
+        if m["id"] == self.focus_cmid:
+            self.focus_node = node
+        return node
+
+    def _add_module(self, parent, m):
         icon = {"resource": "📄", "folder": "📁", "forum": "💬", "assign": "📝", "url": "🔗", "page": "📃",
-                "quiz": "❓", "label": "ℹ", "opencast": "🎬", "lti": "🎬"}.get(m["modname"], "•")
+                "quiz": "❓", "label": "ℹ", "subsection": "📂", "opencast": "🎬", "lti": "🎬"}.get(m["modname"], "•")
         name = m.get("name") or m["modname"]
         if m["modname"] == "label":
-            name = html_to_md(m.get("description")).splitlines()[0][:80] if m.get("description") else "Hinweis"
-        label = f"{icon} {escape(name)}" + (f" [yellow]{NEW}[/]" if m["id"] in self.new else "")
+            lines = [l for l in html_to_md(m.get("description")).splitlines() if l.strip()]
+            name = re.sub(r"[*_#>`]+", "", lines[0]).strip()[:80] if lines else "Hinweis"
+        label = f"{icon} {txt(name)}" + (f" [yellow]{NEW}[/]" if m["id"] in self.new else "")
         data = {"kind": "module", "module": m}
         files = [c for c in m.get("contents", []) if c.get("type") == "file"]
         if m["modname"] == "folder" or (m["modname"] == "resource" and len(files) > 1):
@@ -335,6 +360,15 @@ class CourseScreen(Screen):
                 fname = f"{path}/{f['filename']}" if path else f["filename"]
                 node.add_leaf(f"{escape(fname)}  [dim]{fmt_size(f.get('filesize', 0))}[/]",
                               data={"kind": "file", "file": f, "module": m})
+            return node
+        if m["modname"] == "subsection":
+            sub = self.subsections.get(m["instance"], {})
+            children = [c for c in sub.get("modules", []) if c.get("uservisible", True)]
+            if any(c["id"] in self.new for c in self.all_modules(children)):
+                label += f" [yellow]{NEW}[/]"
+            node = parent.add(label, data={"kind": "section", "section": sub or {"name": name}})
+            for c in children:
+                self.add_module(node, c)
             return node
         if m["modname"] == "forum":
             node = parent.add(label, data=data)
@@ -349,7 +383,7 @@ class CourseScreen(Screen):
         self.query_one("#detail-box", VerticalScroll).scroll_home(animate=False)
 
     def module_header(self, m):
-        parts = [f"## {m.get('name', '')}"]
+        parts = [f"## {html.unescape(m.get('name', ''))}"]
         if m.get("dates"):
             parts.append(" · ".join(f"{d['label']} {fmt_time(d['timestamp'])}" for d in m["dates"]))
         desc = html_to_md(m.get("description"))
@@ -362,7 +396,7 @@ class CourseScreen(Screen):
         kind = data.get("kind")
         if kind == "section":
             sec = data["section"]
-            self.detail(f"## {sec.get('name') or 'Allgemein'}\n\n{html_to_md(sec.get('summary'))}")
+            self.detail(f"## {html.unescape(sec.get('name') or 'Allgemein')}\n\n{html_to_md(sec.get('summary'))}")
         elif kind == "module":
             m = data["module"]
             text = self.module_header(m)
@@ -497,7 +531,7 @@ class CourseScreen(Screen):
             node.remove_children()
             for d in discussions:
                 replies = f" ({d['numreplies']})" if d.get("numreplies") else ""
-                node.add_leaf(f"{escape(d['name'])}{replies}  [dim]{fmt_time(d['timemodified'])}[/]",
+                node.add_leaf(f"{txt(d['name'])}{replies}  [dim]{fmt_time(d['timemodified'])}[/]",
                               data={"kind": "discussion", "discussion": d, "module": m})
             if not discussions:
                 node.add_leaf("[dim]keine Beiträge[/]")
