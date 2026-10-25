@@ -11,8 +11,11 @@ def main():
     if args[:1] == ["handle-url"] and len(args) == 2:
         from .login import handle_url
         return handle_url(args[1])
+    if args[:1] == ["dump"]:
+        from .dump import main as dump
+        return dump(args[1:])
     if args:
-        print("Aufruf: moodle [login | handle-url URL]")
+        print("Aufruf: moodle [login | handle-url URL | dump …]")
         return 2
     if not load_token():
         from .login import login

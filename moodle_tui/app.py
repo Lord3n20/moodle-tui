@@ -6,9 +6,7 @@ import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
-import html2text
 from rich.markup import escape
 from rich.text import Text
 from textual import work
@@ -19,43 +17,15 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Footer, Label, ListItem, ListView, Markdown, TabbedContent, TabPane, Tree
 
 from .api import CACHE_DIR, STATE_DIR, Moodle, MoodleError, NotLoggedIn
+from .chat import ChatMixin
+from .util import fmt_size, fmt_time, html_to_md
 
-WEEKDAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
 NEW = "●"
-
-
-def html_to_md(html):
-    if not html:
-        return ""
-    h = html2text.HTML2Text()
-    h.body_width = 0
-    h.ignore_images = True
-    return h.handle(html).strip()
 
 
 def txt(value):
     """Namen kommen mit HTML-Entities (&amp;) – für die Anzeige dekodieren und escapen."""
     return escape(html.unescape(value or ""))
-
-
-def fmt_time(ts, relative=False):
-    if not ts:
-        return "–"
-    d = datetime.fromtimestamp(ts)
-    text = f"{WEEKDAYS[d.weekday()]} {d:%d.%m. %H:%M}"
-    if relative:
-        days = (d.date() - datetime.now().date()).days
-        rel = {0: "heute", 1: "morgen", -1: "gestern"}.get(days, f"in {days} T" if days > 0 else f"vor {-days} T")
-        text += f"  ({rel})"
-    return text
-
-
-def fmt_size(n):
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
 
 
 def open_external(target):
@@ -113,6 +83,7 @@ class HomeScreen(Screen):
     BINDINGS = [
         Binding("r", "refresh", "Neu laden"),
         Binding("o", "open_browser", "Im Browser"),
+        Binding("c", "app.chat", "Claude fragen"),
         Binding("tab", "app.focus_next", "Bereich wechseln", show=False),
         Binding("q", "app.quit", "Beenden"),
     ]
@@ -238,6 +209,21 @@ class HomeScreen(Screen):
         if event.list_view.index is not None and event.list_view.index < len(self.courses):
             self.app.push_screen(CourseScreen(self.courses[event.list_view.index]))
 
+    def chat_context(self):
+        parts = ["Übersicht (Kursliste, Fristen, Mitteilungen)."]
+        lv = self.query_one("#courses", ListView)
+        if lv.index is not None and lv.index < len(self.courses):
+            c = self.courses[lv.index]
+            parts.append(f"Markierter Kurs: {html.unescape(c['shortname'])} (Kurs-ID {c['id']}).")
+        tabs = self.query_one("#tabs", TabbedContent)
+        table = self.query_one("#deadlines" if tabs.active == "tab-deadlines" else "#notifications", DataTable)
+        items = self.events if table.id == "deadlines" else self.notes
+        if table.row_count and table.cursor_row < len(items):
+            item = items[table.cursor_row]
+            parts.append(f"Markierte {'Frist' if table.id == 'deadlines' else 'Mitteilung'}: "
+                         f"{item.get('name') or item.get('subject')}.")
+        return " ".join(parts)
+
     def action_open_browser(self):
         focused = self.focused
         if isinstance(focused, DataTable) and focused.cursor_row is not None:
@@ -258,6 +244,7 @@ class CourseScreen(Screen):
     BINDINGS = [
         Binding("escape,backspace", "app.pop_screen", "Zurück"),
         Binding("o", "open_browser", "Im Browser"),
+        Binding("c", "app.chat", "Claude fragen"),
         Binding("a", "mark_all", "Alles gesehen"),
         Binding("r", "refresh", "Neu laden"),
         Binding("q", "app.quit", "Beenden"),
@@ -447,6 +434,21 @@ class CourseScreen(Screen):
         self.app.seen.mark(self.course["id"], m)
         node.set_label(Text(node.label.plain.replace(f" {NEW}", "")))
 
+    def chat_context(self):
+        text = f"Kurs {html.unescape(self.course['shortname'])} (Kurs-ID {self.course['id']})."
+        node = self.query_one("#tree", Tree).cursor_node
+        data = (node.data or {}) if node else {}
+        if data.get("kind") == "section":
+            text += f" Markierter Abschnitt: {html.unescape(data['section'].get('name') or 'Allgemein')}."
+        elif data.get("kind") in ("module", "file", "discussion"):
+            m = data["module"]
+            text += f" Markiert: {m['modname']} „{html.unescape(m.get('name') or '')}“ (cmid {m['id']})."
+            if data["kind"] == "file":
+                text += f" Datei: {data['file']['filename']}."
+            elif data["kind"] == "discussion":
+                text += f" Diskussion: {data['discussion']['name']}."
+        return text
+
     def action_mark_all(self):
         for sec in self.sections:
             for m in sec.get("modules", []):
@@ -556,7 +558,7 @@ class CourseScreen(Screen):
 # --------------------------------------------------------------------------- App
 
 
-class MoodleApp(App):
+class MoodleApp(ChatMixin, App):
     TITLE = "RWTHmoodle"
     CSS = """
     #left { width: 38%; max-width: 60; border-right: solid $panel; }
@@ -574,6 +576,7 @@ class MoodleApp(App):
         self.api = Moodle()
         self.seen = Seen()
         self.error = None
+        self.init_chat()
 
     def on_mount(self):
         self.push_screen(HomeScreen())
