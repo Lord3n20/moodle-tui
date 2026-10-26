@@ -10,7 +10,9 @@ import queue
 import re
 import select
 import signal
+import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -146,7 +148,9 @@ KITTY = os.environ.get("TERM") == "xterm-kitty"  # in tmux o. ä. gehen Bilder n
 PLACEHOLDER = "\U0010EEEE"
 ROW_MARKS = [chr(int(c, 16)) for c in (
     "0305 030D 030E 0310 0312 033D 033E 033F 0346 034A 034B 034C 0350 0351 0352 0357 035B 0363 0364 0365 "
-    "0366 0367 0368 0369 036A 036B 036C 036D 036E 036F 0483 0484 0485 0486 0487 0592 0593 0594 0595 0597").split()]
+    "0366 0367 0368 0369 036A 036B 036C 036D 036E 036F 0483 0484 0485 0486 0487 0592 0593 0594 0595 0597 "
+    "0598 0599 059C 059D 059E 059F 05A0 05A1 05A8 05A9 05AB 05AC 05AF 05C4 0610 0611 0612 0613 0614 0615 "
+    "0616 0617 0657 0658").split()]
 MAX_IMAGE_ROWS = len(ROW_MARKS)
 
 
@@ -156,6 +160,22 @@ def png_size(path):
     if head[:8] != b"\x89PNG\r\n\x1a\n":
         return None
     return struct.unpack(">II", head[16:24])
+
+
+def to_png(path):
+    """PNG unverändert; andere Bildformate über vipsthumbnail oder ffmpeg umwandeln (kitty kann nur PNG)."""
+    if png_size(path):
+        return path
+    out = f"{path}.tui.png"
+    if not os.path.exists(out):
+        if shutil.which("vipsthumbnail"):
+            cmd = ["vipsthumbnail", str(path), "-s", "2000x2000", "-o", out]
+        elif shutil.which("ffmpeg"):
+            cmd = ["ffmpeg", "-loglevel", "error", "-i", str(path), "-frames:v", "1", out]
+        else:
+            return None
+        subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return out if os.path.exists(out) else None
 
 
 def cell_size():
@@ -177,7 +197,9 @@ class Images:
     def __init__(self, app, loader):
         self.app, self.loader = app, loader
         self.files = {}        # url → Pfad, "loading" oder None (Fehler)
-        self.placed = {}       # (Pfad, Spalten) → (Bild-ID, Zeilen)
+        self.placed = {}       # (Pfad, Spalten) → Bild-ID
+        self.sizes = {}        # Pfad → (Breite, Höhe) in Pixeln
+        self.version = 0       # steigt mit jedem fertig geladenen Bild (macht Layouts ungültig)
         self.pairs = {}        # Bild-ID → curses-Farbpaar
         self.inline = False  # wird nach dem Start von curses gesetzt
 
@@ -190,40 +212,50 @@ class Images:
 
     def _load(self, url):
         try:
-            path = self.loader(url)
+            path = url if url.startswith("/") else self.loader(url)  # lokale Datei oder aus Moodle laden
+            if self.inline:
+                path = to_png(path)
         except Exception:
             path = None
         self.app.post(self._loaded, url, path)
 
     def _loaded(self, url, path):
         self.files[url] = path
+        self.version += 1
 
-    def placement(self, url, maxcols):
-        """(Bild-ID, Spalten, Zeilen, Farbattribut) für die Inline-Anzeige, sonst None."""
+    def geometry(self, url, maxcols):
+        """(Pfad, Spalten, Zeilen) für die Inline-Anzeige oder None – ohne etwas an kitty zu schicken."""
         if not self.inline:
             return None
         path = self.path(url)
-        size = path and png_size(path)
+        if not path:
+            return None
+        if path not in self.sizes:
+            self.sizes[path] = png_size(path)
+        size = self.sizes[path]
         if not size:
             return None
         cw, ch = cell_size()
         cols = max(1, min(maxcols, round(size[0] / cw)))
         rows = max(1, min(MAX_IMAGE_ROWS, round(cols * cw * size[1] / size[0] / ch)))
         cols = min(cols, max(1, round(rows * ch * size[0] / size[1] / cw)))  # bei gekappter Höhe schmaler
-        key = (str(path), cols)
+        return str(path), cols, rows
+
+    def color(self, path, cols, rows):
+        """Farbattribut (= Bild-ID) für ein sichtbares Bild; überträgt es beim ersten Mal an kitty."""
+        key = (path, cols)
         if key not in self.placed:
             image_id = len(self.placed) % 254 + 1
             if image_id in self.pairs:  # ID wird wiederverwendet: alte Platzierung verwerfen
-                self.placed = {k: v for k, v in self.placed.items() if v[0] != image_id}
+                self.placed = {k: v for k, v in self.placed.items() if v != image_id}
             else:
                 n = 32 + image_id
                 curses.init_pair(n, image_id, -1)
                 self.pairs[image_id] = curses.color_pair(n)
-            payload = base64.b64encode(str(path).encode()).decode()
+            payload = base64.b64encode(path.encode()).decode()
             self._send(f"\x1b_Ga=T,U=1,q=2,f=100,t=f,i={image_id},c={cols},r={rows};{payload}\x1b\\")
-            self.placed[key] = (image_id, rows)
-        image_id, rows = self.placed[key]
-        return image_id, cols, rows, self.pairs[image_id]
+            self.placed[key] = image_id
+        return self.pairs[self.placed[key]]
 
     @staticmethod
     def _send(seq):
@@ -437,31 +469,36 @@ class TextView(Widget):
     def __init__(self):
         self.doc, self.top, self.at_end = [], 0, False
         self.links = []
+        self._layout = None
 
-    def set(self, lines, end=False):
+    def set(self, lines, end=False, keep=False):
         self.doc = lines
         self.at_end = end
-        if not end:
+        if not (end or keep):
             self.top = 0
 
     def layout(self, w):
-        """Zeilen für die Anzeige: ('text', runs) oder ('image', (id, spalten, zeile, attr)) oder ('rule', None)."""
+        """Zeilen für die Anzeige: ('text', runs), ('image', (pfad, spalten, zeilen, zeile)) oder ('rule', None)."""
+        key = (id(self.doc), len(self.doc), w, self.images and self.images.version)
+        if self._layout and self._layout[0] == key:
+            return self._layout[1]
         out = []
         for line in self.doc:
             if line and line[0][1] == "r":
                 out.append(("rule", None))
             elif line and line[0][1] == "I":
                 alt, url = line[0][0], line[0][2]
-                place = self.images.placement(url, w) if self.images else None
+                place = self.images.geometry(url, w) if self.images else None
                 if place:
-                    image_id, cols, rows, a = place
-                    out += [("image", (image_id, cols, r, a, url)) for r in range(rows)]
+                    path, cols, rows = place
+                    out += [("image", (path, cols, rows, r)) for r in range(rows)]
                 else:
                     if self.images:
                         self.images.path(url)  # vorab laden, damit ein Klick es im Bildbetrachter öffnet
                     out.append(("text", [("🖼 ", "dI", url), (alt, "I", url)]))
             else:
                 out += [("text", runs) for runs in wrap(line, w)]
+        self._layout = (key, out)
         return out
 
     def key(self, k):
@@ -493,9 +530,9 @@ class TextView(Widget):
             if kind == "rule":
                 hline(win, y + row, x, w)
             elif kind == "image":
-                image_id, cols, r, a, url = value
+                path, cols, rows, r = value
+                a = self.images.color(path, cols, rows)
                 put(win, y + row, x, PLACEHOLDER + ROW_MARKS[r] + ROW_MARKS[0] + (PLACEHOLDER + ROW_MARKS[r]) * (cols - 1), a)
-                self.links.append((y + row, x, x + cols, url, True))
             else:
                 cx = x
                 for text, style, link in value:
