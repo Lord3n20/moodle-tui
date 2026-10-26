@@ -1,25 +1,26 @@
-"""Echter Chat-Test: Kurs öffnen, Frage stellen, auf Antwort warten, Screenshot."""
-import asyncio, sys, tempfile, time
-from pathlib import Path
-sys.path.insert(0, ".")
-from moodle_tui import app as A
-A.STATE_DIR = Path(tempfile.mkdtemp())
-SP, QUESTION = sys.argv[1], sys.argv[2]
+"""Echter Chat-Test in tmux: ersten Kurs öffnen, Frage stellen, Antwort abwarten.
 
-async def main():
-    app = A.MoodleApp()
-    async with app.run_test(size=(150, 45)) as pilot:
-        await pilot.pause(5)
-        await pilot.press("enter"); await pilot.pause(3)
-        await pilot.press("c"); await pilot.pause(0.5)
-        for ch in QUESTION:
-            await pilot.press(ch if ch != " " else "space")
-        await pilot.press("enter")
-        t0 = time.time()
-        await pilot.pause(2)
-        while app.chat_busy and time.time() - t0 < 240:
-            await pilot.pause(1)
-        print(f"Dauer {time.time()-t0:.0f}s, Session {app.chat_session}")
-        print(app.chat_history[-1]["text"])
-        app.save_screenshot("chat.svg", path=SP)
-asyncio.run(main())
+Aufruf: python tests/chat_run.py AUSGABEORDNER "FRAGE\""""
+import sys, time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tmux import keys, shot, start, stop, tmux
+
+out = Path(sys.argv[1]).resolve()
+out.mkdir(parents=True, exist_ok=True)
+start(f"cd {Path(__file__).resolve().parent.parent} && {sys.executable} tests/real_run.py --app", (150, 45))
+keys(wait=5)
+keys("Enter", wait=3)
+keys("c", wait=0.5)
+tmux("send-keys", "-t", "moodle-tui-test", "-l", sys.argv[2])
+keys("Enter", wait=2)
+t0 = time.time()
+while "Claude denkt" in tmux("capture-pane", "-p", "-t", "moodle-tui-test") or "⚙" in tmux("capture-pane", "-p", "-t", "moodle-tui-test"):
+    if time.time() - t0 > 240:
+        break
+    time.sleep(1)
+print(f"Dauer {time.time() - t0:.0f} s")
+shot("chat", out)
+keys("Escape", "q")
+stop()

@@ -1,23 +1,21 @@
-"""Startet die TUI headless mit echtem Konto (ohne Gesehen-Stand zu verändern) und macht Screenshots."""
-import asyncio, sys, tempfile
-from pathlib import Path
-sys.path.insert(0, ".")
-from moodle_tui import app as A
-from textual.widgets import Tree
-A.STATE_DIR = Path(tempfile.mkdtemp())
-SP = sys.argv[1]
+"""Startet die TUI mit echtem Konto in tmux (Gesehen-Stand im Tempordner) und schneidet Bildschirme mit.
 
-async def main():
-    app = A.MoodleApp()
-    async with app.run_test(size=(150, 45)) as pilot:
-        await pilot.pause(6)
-        app.save_screenshot("real-home.svg", path=SP)
-        await pilot.press("enter"); await pilot.pause(3)
-        t = app.screen.query_one(Tree)
-        for k in ["down"] * 9:
-            await pilot.press(k)
-        await pilot.press("enter"); await pilot.pause(1)
-        await pilot.press("down"); await pilot.pause(1)
-        app.save_screenshot("real-course.svg", path=SP)
-        print("cursor:", t.cursor_node and t.cursor_node.label.plain)
-asyncio.run(main())
+Aufruf: python tests/real_run.py AUSGABEORDNER [KURS-NR]"""
+import sys, tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if sys.argv[1:2] == ["--app"]:
+    from moodle_tui import app as A
+    A.STATE_DIR = Path(tempfile.mkdtemp())
+    A.MoodleApp().run()
+    sys.exit()
+
+from tmux import keys, shot, start, stop
+out = Path(sys.argv[1]).resolve()
+out.mkdir(parents=True, exist_ok=True)
+start(f"cd {Path(__file__).resolve().parent.parent} && {sys.executable} tests/real_run.py --app", (150, 45))
+keys(wait=5); shot("real-home", out)
+keys(*["Down"] * int(sys.argv[2] if len(sys.argv) > 2 else 0), "Enter", wait=3); shot("real-course", out)
+keys(*["Down"] * 9, "Enter", "Down", wait=1); shot("real-course-2", out)
+keys("q"); stop()
