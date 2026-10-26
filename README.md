@@ -33,7 +33,7 @@ und registrieren: `xdg-mime default moodle-tui-login.desktop x-scheme-handler/mo
 
 - `moodle login` – Anmeldung über RWTH-SSO im Browser; das Token landet in `~/.config/moodle-tui/token`.
 - `moodle` – Übersicht (Kurse mit ● für Neues, Fristen, Mitteilungen), Enter öffnet einen Kurs, `o` im Browser.
-- `c` – Chat mit Claude über den Kursinhalt (braucht die `claude`-CLI).
+- `c` – optional: Chat mit Claude über den Kursinhalt. Nur aktiv, wenn die `claude`-CLI installiert ist; sonst (oder mit `MOODLE_TUI_CHAT=0`) fehlt die Taste einfach.
 - `moodle dump …` – rein lesender Zugriff für Skripte.
 
 Dateien werden nach `~/.cache/moodle-tui/files` geladen und mit `xdg-open` geöffnet.

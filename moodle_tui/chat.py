@@ -1,6 +1,8 @@
 """Chatfenster: Fragen an Claude über die `claude`-Kommandozeile (läuft über Enzos Abo)."""
 
 import json
+import os
+import shutil
 import subprocess
 import time
 from datetime import date
@@ -162,10 +164,17 @@ class ChatMixin:
     """Chat-Zustand der App; der Worker läuft an der App, damit Schließen des Fensters ihn nicht abbricht."""
 
     def init_chat(self):
+        # Chat ist optional: nur mit installierter `claude`-CLI, abschaltbar mit MOODLE_TUI_CHAT=0
+        self.chat_enabled = bool(shutil.which("claude")) and os.environ.get("MOODLE_TUI_CHAT", "1") != "0"
         self.chat_history = []
         self.chat_session = None
         self.chat_status = ""
         self.chat_busy = False
+
+    def check_action(self, action, parameters):
+        if action == "chat" and not self.chat_enabled:
+            return False  # Taste c ausblenden
+        return super().check_action(action, parameters)
 
     def action_chat(self):
         if isinstance(self.screen, ChatScreen):
