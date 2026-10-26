@@ -6,14 +6,14 @@ Terminal-Oberfläche (Textual) für RWTHmoodle – Kurse, Fristen, Mitteilungen 
 
 ```sh
 python -m venv ~/.local/share/moodle-tui/venv
-~/.local/share/moodle-tui/venv/bin/pip install -r requirements.txt
+~/.local/share/moodle-tui/venv/bin/pip install git+https://github.com/Lord3n20/moodle-tui
 ```
 
 Startskript `~/.local/bin/moodle`:
 
 ```sh
 #!/bin/sh
-cd "$HOME/moodle-tui" && exec "$HOME/.local/share/moodle-tui/venv/bin/python" -m moodle_tui "$@"
+exec "$HOME/.local/share/moodle-tui/venv/bin/python" -m moodle_tui "$@"
 ```
 
 Für den Login den Link-Handler `~/.local/share/applications/moodle-tui-login.desktop` anlegen:

@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moodle-tui"
+version = "0.1.0"
+description = "Terminal-Oberfläche für RWTHmoodle (Textual)"
+requires-python = ">=3.11"
+dependencies = ["html2text>=2025.4", "requests>=2.32", "textual>=8.2"]
+
+[tool.setuptools]
+packages = ["moodle_tui"]
