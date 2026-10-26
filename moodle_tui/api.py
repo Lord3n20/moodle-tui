@@ -159,6 +159,12 @@ class Moodle:
 
     # --- Kursinhalte -----------------------------------------------------
 
+    def course_by_id(self, courseid):
+        return self.call("core_course_get_courses_by_field", field="id", value=courseid)["courses"][0]
+
+    def course_module(self, cmid):
+        return self.call("core_course_get_course_module", cmid=cmid)["cm"]
+
     def course_contents(self, courseid):
         return self.call("core_course_get_contents", courseid=courseid)
 

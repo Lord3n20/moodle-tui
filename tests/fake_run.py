@@ -4,6 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 now = int(time.time())
+SITE = "https://moodle.rwth-aachen.de"
 
 
 def png(path, w=200, h=100):
@@ -37,7 +38,7 @@ class Fake:
                                {"id": 2, "fullname": "Programmierung", "shortname": "Progra", "viewurl": "y"}]
     def deadlines(self): return [{"name": "Übungsblatt 3", "timesort": now + 3600, "course": {"id": 1, "shortname": "Ana", "fullname": "Analysis I"}, "description": "<p>Abgabe <b>bis</b> Mitternacht</p><ul><li>Aufgabe 1</li><li>Aufgabe 2</li></ul>", "url": "https://m/mod/assign/view.php?id=11"},
                                  {"name": "Quiz 2", "timesort": now + 5*86400, "course": {"id": 2, "shortname": "Progra", "fullname": "Programmierung"}, "description": "", "url": ""}]
-    def notifications(self): return [{"id": 5, "subject": "Neue Ankündigung [Ana]", "read": False, "timecreated": now - 3600, "fullmessagehtml": "<p>Hallo</p>"}]
+    def notifications(self): return [{"id": 5, "subject": "Neue Ankündigung [Ana]", "read": False, "timecreated": now - 3600, "fullmessagehtml": "<p>Hallo</p>", "contexturl": SITE + "/mod/assign/view.php?id=11"}]
     def mark_notification_read(self, i): pass
     def course_contents(self, cid):
         return [{"name": "Allgemeines", "summary": "<p>Willkommen</p>", "modules": [
@@ -46,7 +47,11 @@ class Fake:
                     {"id": 12, "name": "Skript", "modname": "resource", "contents": [{"type": "file", "filename": "skript.pdf", "filesize": 2_000_000, "timemodified": now + cid, "fileurl": "u"}]},
                     {"id": 13, "modname": "label", "description": "<p>Klausur am 20.02.</p><p><img src='https://m/bild.png' alt='Poster'></p><p>Darunter Text</p>", "contents": []}]},
                 {"name": "Woche 1", "summary": "", "modules": [{"id": 14, "name": "Folien", "modname": "folder", "contents": [{"type": "file", "filename": "a.pdf", "filepath": "/", "filesize": 10, "timemodified": 1, "fileurl": "u"}]},
+                    {"id": 16, "name": "Zum Skript", "modname": "url", "contents": [{"type": "url", "fileurl": SITE + "/mod/resource/view.php?id=12"}]},
+                    {"id": 17, "name": "Extern", "modname": "url", "contents": [{"type": "url", "fileurl": "https://example.org/x"}]},
                     {"id": 15, "name": "La ropa", "modname": "resource", "contents": [{"type": "file", "filename": "ropa.jpeg", "filesize": 85_000, "timemodified": 1, "fileurl": "u"}]}]}]
+    def course_module(self, cmid): return {"course": 1}
+    def course_by_id(self, cid): return self.courses()[0]
     def assignments(self, cid): return {11: {"id": 4, "name": "Blatt 3", "duedate": now + 3600, "intro": "<p>Aufgaben</p>"}}
     def submission_status(self, a): return {"lastattempt": {"submission": {"status": "new"}}}
     def forum_discussions(self, f): return [{"name": "Klausurtermin", "discussion": 7, "numreplies": 2, "timemodified": now}]
@@ -96,3 +101,12 @@ for term in ("xterm-256color", "xterm-kitty"):
     keys("Down", "Down", "Enter", wait=2); shot(f"jpeg-{term}", out)
     keys("Up", "Enter", "Down", "Enter", wait=3); shot(f"pdf-{term}", out)
     keys("q"); stop()
+
+# Links: Mitteilung → Aufgabe im Kurs, Link-Modul → Datei im selben Kurs, externer Link → Nachfrage
+start(f"cd {Path(__file__).resolve().parent.parent} && env FAKE_DIR={out} TERM=xterm-256color {sys.executable} {Path(__file__).resolve()} --app")
+keys("Tab", "Right", "Enter", wait=1.5); shot("link-mitteilung", out)
+keys(*["Down"] * 3, "Enter", "Down", "Down", wait=0.5); shot("link-modul-markiert", out)
+keys("Enter", wait=1.5); shot("link-intern", out)
+keys(*["Down"] * 5, "Enter", wait=0.5); shot("link-extern-nachfrage", out)
+keys("n", "o", wait=0.5); shot("o-nachfrage", out)
+keys("Escape", "q"); stop()

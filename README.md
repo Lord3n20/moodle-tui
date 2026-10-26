@@ -42,7 +42,8 @@ und registrieren: `xdg-mime default moodle-tui-login.desktop x-scheme-handler/mo
 
 Dateien werden nach `~/.cache/moodle-tui/files` geladen und in der TUI angezeigt: Bilder und PDF-Seiten als Bild
 (kitty; JPEG & Co. über `vipsthumbnail` oder `ffmpeg`, PDF über `pdftoppm`), sonst PDF-Text (`pdftotext`) bzw. Textdateien.
-Andere Programme öffnen sich nur mit `o` (Standardprogramm/Browser) oder per Klick auf einen Link.
+Links innerhalb von Moodle (Kurse, Module, Forumsdiskussionen, Dateien) öffnen sich in der TUI, auch aus Mitteilungen
+(Enter). Andere Programme (Browser, Standardprogramm) starten nur mit `o` oder per Link – und immer erst nach Nachfrage (j/n).
 
 Bedienung mit Tastatur oder Maus (Klick, Mausrad, Links und Fußzeile anklickbar). Bilder in Beschreibungen
 zeigt kitty direkt an (PNG, über das Grafikprotokoll); sonst steht dort „🖼 Name“ – ein Klick öffnet das Bild.
