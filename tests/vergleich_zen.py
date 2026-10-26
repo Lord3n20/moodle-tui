@@ -11,7 +11,7 @@ SP = Path.home() / ".cache/moodle-vergleich"  # Ergebnisse (serie.jsonl), TUI-Zu
 PROFIL = Path.home() / ".cache/mess-zen-profil"
 M = "https://moodle.rwth-aachen.de"
 C1, C2 = 62409, 62726
-DUR = 150
+DUR = int(os.environ.get("DUR", 150))  # Sekunden pro Lauf, Ablauf braucht mind. ~110
 PDF_CMID = 2382021  # Foucault 1999, 13 MB, Lesetext 29.10.
 BAT = Path("/sys/class/power_supply/BAT0")
 

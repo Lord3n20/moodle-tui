@@ -1,0 +1,3 @@
+html2text>=2025.4
+requests>=2.32
+textual>=8.2
