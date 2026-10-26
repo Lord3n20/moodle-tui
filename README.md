@@ -1,6 +1,7 @@
 # moodle-tui
 
-Terminal-Oberfläche (Textual) für RWTHmoodle – Kurse, Fristen, Mitteilungen und Kursinhalte ansehen, ohne Browser.
+Terminal-Oberfläche für RWTHmoodle – Kurse, Fristen, Mitteilungen und Kursinhalte ansehen, ohne Browser.
+Nur Python-Standardbibliothek (curses, http.client, html.parser), keine Abhängigkeiten.
 
 ## Installation
 
@@ -37,3 +38,9 @@ und registrieren: `xdg-mime default moodle-tui-login.desktop x-scheme-handler/mo
 - `moodle dump …` – rein lesender Zugriff für Skripte.
 
 Dateien werden nach `~/.cache/moodle-tui/files` geladen und mit `xdg-open` geöffnet.
+
+Bedienung mit Tastatur oder Maus (Klick, Mausrad, Links und Fußzeile anklickbar). Bilder in Beschreibungen
+zeigt kitty direkt an (PNG, über das Grafikprotokoll); sonst steht dort „🖼 Name“ – ein Klick öffnet das Bild.
+
+Tests: `python tests/fake_run.py ORDNER` (Testdaten), `tests/real_run.py` und `tests/chat_run.py` (echtes Konto),
+alle per tmux ferngesteuert.

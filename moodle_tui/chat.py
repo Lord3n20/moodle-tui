@@ -7,18 +7,14 @@ import subprocess
 import time
 from datetime import date
 
-from rich.markup import escape
-from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
-from textual.screen import ModalScreen
-from textual.widgets import Input, Label, Markdown, Static
-
+from . import ui
 from .api import CACHE_DIR
 from .dump import USAGE
+from .util import Doc
 
 SYSTEM = """Du bist als Chat in Enzos Moodle-TUI (RWTHmoodle, RWTH Aachen) eingebettet.
-Antworte auf Deutsch, knapp und gut lesbar im Terminal: kurze Absätze, Listen ok, keine Tabellen.
+Antworte auf Deutsch, knapp und gut lesbar im Terminal: kurze Absätze, reiner Text ohne Markdown-Auszeichnung
+(kein **, #, ` oder Tabellen); Aufzählungen mit „- “ sind ok.
 
 Moodle-Daten holst du nur lesend über Bash mit `moodle dump …` – immer als einzelnen Befehl,
 ohne Pipes, ohne `&&`, ohne andere Programme:
@@ -83,85 +79,79 @@ def run_claude(question, context, session_id, on_text, on_status):
     return text, session_id, error
 
 
-class ChatScreen(ModalScreen):
-    BINDINGS = [
-        Binding("escape", "dismiss", "Schließen"),
-        Binding("ctrl+n", "new_chat", "Neuer Chat"),
+class ChatScreen(ui.Screen):
+    modal = True
+    bindings = [
+        ("escape", "Schließen", "back"),
+        ("ctrl+n", "Neuer Chat", "new_chat"),
     ]
-    DEFAULT_CSS = """
-    ChatScreen { align: right top; background: $background 50%; }
-    #chat { width: 55%; min-width: 50; height: 100%; background: $surface; border-left: thick $accent; padding: 0 1; }
-    #chat-title { color: $accent; text-style: bold; }
-    #chat-log { height: 1fr; }
-    #chat-log Markdown { margin: 0; padding: 0; }
-    .user { margin-top: 1; color: $text-muted; text-style: bold; }
-    #chat-status { color: $text-muted; height: 1; }
-    """
 
     def __init__(self, context):
-        super().__init__()
         self.context = context
-        self.widgets = {}
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="chat"):
-            yield Label("Claude  ·  Esc schließt  ·  Strg+N neuer Chat", id="chat-title")
-            yield VerticalScroll(id="chat-log")
-            yield Label("", id="chat-status")
-            yield Input(placeholder="Frage zu Moodle …", id="chat-input")
+    def mount(self):
+        self.log = ui.TextView()
+        self.input = ui.Input(self.submit, "Frage zu Moodle …")
+        self.focus = self.input
+        self.update()
 
-    def on_mount(self):
-        for entry in self.app.chat_history:
-            self.mount_entry(entry)
+    def focusables(self):
+        return [self.input]
+
+    def widgets(self):
+        return [self.log, self.input]
+
+    def update(self):
+        doc = Doc()
         if not self.app.chat_history:
-            self.query_one("#chat-log").mount(Static(
-                "[dim]Frag z. B. „Was muss ich bis nächste Woche lesen?“ oder „Fass das markierte PDF zusammen“.[/]"))
-        self.set_status(self.app.chat_status)
-        self.query_one(Input).focus()
+            doc.text("Frag z. B. „Was muss ich bis nächste Woche lesen?“ oder „Fass das markierte PDF zusammen“.", "d")
+        for entry in self.app.chat_history:
+            doc.gap()
+            if entry["role"] == "user":
+                doc.text(f"Du: {entry['text']}", "bd")
+            else:
+                doc.text(entry["text"] or "…")
+        self.log.set(doc.lines, end=True)
 
-    def mount_entry(self, entry):
-        log = self.query_one("#chat-log", VerticalScroll)
-        if entry["role"] == "user":
-            log.mount(Static(f"Du: {escape(entry['text'])}", classes="user"))
+    def draw(self, win, h, w):
+        cw = max(min(w, 50), int(w * 0.55))
+        x = w - cw
+        for row in range(h):
+            ui.put(win, row, x, " " * cw)
+        ui.vline(win, 0, x, h, "┃", ui.STYLE["a"])
+        x, cw = x + 2, cw - 3
+        ui.put(win, 0, x, "Claude  ·  Esc schließt  ·  Strg+N neuer Chat", ui.STYLE["h"], cw)
+        self.log.draw(win, 2, x, h - 5, cw)
+        ui.put(win, h - 2, x, self.app.chat_status, ui.STYLE["d"], cw)
+        self.cursor_pos = self.input.draw(win, h - 1, x, 1, cw)
+
+    def key(self, k):
+        if k in ("up", "down", "pageup", "pagedown"):
+            self.log.key(k)
         else:
-            md = Markdown(entry["text"] or "…")
-            self.widgets[id(entry)] = md
-            log.mount(md)
-        log.scroll_end(animate=False)
+            super().key(k)
 
-    def refresh_entry(self, entry):
-        md = self.widgets.get(id(entry))
-        if md is not None:
-            md.update(entry["text"] or "…")
-            self.query_one("#chat-log", VerticalScroll).scroll_end(animate=False)
-
-    def set_status(self, text):
-        self.query_one("#chat-status", Label).update(escape(text))
-
-    def on_input_submitted(self, event: Input.Submitted):
-        question = event.value.strip()
+    def submit(self, text):
+        question = text.strip()
         if not question or self.app.chat_busy:
             return
-        event.input.clear()
-        user = {"role": "user", "text": question}
+        self.input.clear()
         answer = {"role": "assistant", "text": ""}
-        self.app.chat_history += [user, answer]
-        self.mount_entry(user)
-        self.mount_entry(answer)
+        self.app.chat_history += [{"role": "user", "text": question}, answer]
+        self.update()
         self.app.ask_claude(question, self.context, answer)
 
-    def action_new_chat(self):
+    def new_chat(self):
         if self.app.chat_busy:
             return
         self.app.chat_history.clear()
         self.app.chat_session = None
-        self.widgets.clear()
-        self.query_one("#chat-log").remove_children()
-        self.set_status("Neuer Chat.")
+        self.app.chat_status = "Neuer Chat."
+        self.update()
 
 
 class ChatMixin:
-    """Chat-Zustand der App; der Worker läuft an der App, damit Schließen des Fensters ihn nicht abbricht."""
+    """Chat-Zustand der App; der Thread läuft an der App, damit Schließen des Fensters ihn nicht abbricht."""
 
     def init_chat(self):
         # Chat ist optional: nur mit installierter `claude`-CLI, abschaltbar mit MOODLE_TUI_CHAT=0
@@ -171,32 +161,25 @@ class ChatMixin:
         self.chat_status = ""
         self.chat_busy = False
 
-    def check_action(self, action, parameters):
-        if action == "chat" and not self.chat_enabled:
-            return False  # Taste c ausblenden
-        return super().check_action(action, parameters)
+    def allowed(self, action):
+        return action != "chat" or self.chat_enabled
 
-    def action_chat(self):
+    def chat(self):
         if isinstance(self.screen, ChatScreen):
             return
         context = getattr(self.screen, "chat_context", lambda: "Übersicht")()
-        self.push_screen(ChatScreen(context))
+        self.push(ChatScreen(context))
 
-    def _chat_screen(self):
-        return self.screen if isinstance(self.screen, ChatScreen) else None
+    def _chat_refresh(self):
+        if isinstance(self.screen, ChatScreen):
+            self.screen.update()
 
     def _chat_status(self, text):
         self.chat_status = text
-        if screen := self._chat_screen():
-            screen.set_status(text)
-
-    def _chat_refresh(self, entry):
-        if screen := self._chat_screen():
-            screen.refresh_entry(entry)
 
     def ask_claude(self, question, context, entry):
         self.chat_busy = True
-        self._chat_status("Claude denkt nach …")
+        self.chat_status = "Claude denkt nach …"
 
         def work():
             last = [0.0]
@@ -205,20 +188,20 @@ class ChatMixin:
                 entry["text"] = text
                 if time.monotonic() - last[0] > 0.15:
                     last[0] = time.monotonic()
-                    self.call_from_thread(self._chat_refresh, entry)
+                    self.post(self._chat_refresh)
 
             def on_status(status):
-                self.call_from_thread(self._chat_status, status)
+                self.post(self._chat_status, status)
 
             text, session, error = run_claude(question, context, self.chat_session, on_text, on_status)
-            entry["text"] = text + (f"\n\n**Fehler:** {error}" if error else "")
+            entry["text"] = text + (f"\n\nFehler: {error}" if error else "")
             self.chat_session = session
 
             def done():
                 self.chat_busy = False
-                self._chat_refresh(entry)
-                self._chat_status("")
+                self.chat_status = ""
+                self._chat_refresh()
 
-            self.call_from_thread(done)
+            self.post(done)
 
-        self.run_worker(work, thread=True, group="chat")
+        self.thread(work)

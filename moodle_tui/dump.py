@@ -4,7 +4,7 @@ import html
 import sys
 
 from .api import CACHE_DIR, Moodle
-from .util import fmt_size, fmt_time, html_to_md
+from .util import fmt_size, fmt_time, html_to_text
 
 USAGE = """Aufruf:
   moodle dump courses                  Kurse mit IDs
@@ -47,7 +47,7 @@ def course(api, courseid):
             for d in m.get("dates") or []:
                 line += f" · {d['label']} {fmt_time(d['timestamp'])}"
             print(line)
-            desc = html_to_md(m.get("description"))
+            desc = html_to_text(m.get("description"))
             if desc:
                 print(pad + "  " + desc[:600].replace("\n", "\n" + pad + "  "))
             for f in m.get("contents", []):
@@ -62,7 +62,7 @@ def course(api, courseid):
         if sec.get("component") == "mod_subsection":
             continue
         print(f"\n## {html.unescape(sec.get('name') or 'Allgemein')}")
-        summary = html_to_md(sec.get("summary"))
+        summary = html_to_text(sec.get("summary"))
         if summary:
             print(summary[:800])
         modules(sec.get("modules", []), 0)
@@ -78,7 +78,7 @@ def deadlines(api):
 
 def notifications(api):
     for n in api.notifications():
-        body = html_to_md(n.get("fullmessagehtml")) or n.get("fullmessage") or n.get("smallmessage", "")
+        body = html_to_text(n.get("fullmessagehtml")) or n.get("fullmessage") or n.get("smallmessage", "")
         print(f"### {n['subject']}\n{fmt_time(n['timecreated'])} · {'gelesen' if n['read'] else 'ungelesen'}\n{body}\n")
 
 
@@ -88,13 +88,13 @@ def forum(api, courseid, cmid):
         print(f"\n### {d['name']} ({fmt_time(d['timemodified'])})")
         for p in api.discussion_posts(d["discussion"]):
             author = (p.get("author") or {}).get("fullname", "")
-            print(f"- {author}, {fmt_time(p.get('timecreated'))}:\n  {html_to_md(p.get('message'))[:2000]}")
+            print(f"- {author}, {fmt_time(p.get('timecreated'))}:\n  {html_to_text(p.get('message'))[:2000]}")
 
 
 def page(api, courseid, cmid):
     m = _module(api, courseid, cmid)
     index = next((c for c in m.get("contents", []) if c.get("filename") == "index.html"), None)
-    print(html_to_md(api.fetch_text(index["fileurl"])) if index else "Keine Seite.")
+    print(html_to_text(api.fetch_text(index["fileurl"])) if index else "Keine Seite.")
 
 
 def assign(api, courseid, cmid):
@@ -103,7 +103,7 @@ def assign(api, courseid, cmid):
         sys.exit("Keine Aufgabe mit dieser cmid.")
     print(f"{a['name']}\nFällig: {fmt_time(a.get('duedate'), relative=True)}")
     sub = (api.submission_status(a["id"]).get("lastattempt") or {}).get("submission") or {}
-    print(f"Status: {sub.get('status', '–')}\n\n{html_to_md(a.get('intro'))}")
+    print(f"Status: {sub.get('status', '–')}\n\n{html_to_text(a.get('intro'))}")
 
 
 def file(api, courseid, cmid):

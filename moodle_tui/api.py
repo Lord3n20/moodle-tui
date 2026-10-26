@@ -1,12 +1,14 @@
 """Schlanker Client für die Moodle-Webservice-Schnittstelle (dieselbe wie die Moodle-App)."""
 
 import hashlib
+import http.client
 import json
 import os
+import ssl
+import threading
 import time
 from pathlib import Path
-
-import requests
+from urllib.parse import urlencode, urljoin, urlsplit
 
 SITE = "https://moodle.rwth-aachen.de"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "moodle-tui"
@@ -39,6 +41,50 @@ def save_token(token):
     TOKEN_FILE.write_text(token + "\n")
 
 
+_local = threading.local()
+_ssl = ssl.create_default_context()
+NET_ERRORS = (OSError, http.client.HTTPException)
+
+
+def request(url, data=None, timeout=20):
+    """GET (oder POST mit data) über eine offen gehaltene Verbindung je Thread und Host.
+
+    Gibt die Antwort zurück; der Aufrufer muss sie ganz lesen, bevor er die nächste Anfrage stellt."""
+    for _ in range(5):  # Weiterleitungen
+        parts = urlsplit(url)
+        path = parts.path + (f"?{parts.query}" if parts.query else "")
+        body = urlencode(data).encode() if data is not None else None
+        headers = {"User-Agent": "moodle-tui"}
+        if body is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        conns = _local.__dict__.setdefault("conns", {})
+        for attempt in (0, 1):
+            conn = conns.get(parts.netloc)
+            if conn is None:
+                conn = conns[parts.netloc] = http.client.HTTPSConnection(parts.netloc, context=_ssl)
+            conn.timeout = timeout
+            if conn.sock:
+                conn.sock.settimeout(timeout)
+            try:
+                conn.request("GET" if body is None else "POST", path, body, headers)
+                r = conn.getresponse()
+                break
+            except NET_ERRORS as e:
+                conn.close()
+                # Der Server schließt ruhende Verbindungen – dann einmal neu verbinden
+                if attempt or isinstance(e, TimeoutError):
+                    raise
+        if r.status in (301, 302, 303, 307, 308) and r.getheader("Location"):
+            r.read()
+            url, data = urljoin(url, r.getheader("Location")), None
+            continue
+        if r.status >= 400:
+            r.read()
+            raise MoodleError(f"HTTP {r.status} bei {parts.path}", "http")
+        return r
+    raise MoodleError("Zu viele Weiterleitungen.", "http")
+
+
 def _flatten(params, prefix=""):
     """Moodle erwartet Listen/Dicts als key[0][feld]=wert."""
     out = {}
@@ -59,8 +105,6 @@ class Moodle:
         self.token = token or load_token()
         if not self.token:
             raise NotLoggedIn("Nicht angemeldet – erst `moodle login` ausführen.", "notoken")
-        self.session = requests.Session()
-        self.session.headers["User-Agent"] = "moodle-tui"
         self._userid = None
         (CACHE_DIR / "json").mkdir(parents=True, exist_ok=True)
 
@@ -71,10 +115,8 @@ class Moodle:
         data = {"wstoken": self.token, "wsfunction": function, "moodlewsrestformat": "json",
                 "moodlewssettingfilter": "true", "moodlewssettinglang": "de", **_flatten(params)}
         try:
-            r = self.session.post(f"{SITE}/webservice/rest/server.php", data=data, timeout=20)
-            r.raise_for_status()
-            result = r.json()
-        except (requests.ConnectionError, requests.Timeout):
+            result = json.loads(request(f"{SITE}/webservice/rest/server.php", data).read())
+        except NET_ERRORS:
             if cache.exists():
                 return json.loads(cache.read_text())
             raise MoodleError("Keine Verbindung zu Moodle.", "offline")
@@ -138,29 +180,33 @@ class Moodle:
     # --- Dateien ---------------------------------------------------------
 
     def _authed(self, url):
-        url = url.replace("/pluginfile.php", "/webservice/pluginfile.php", 1) if "/webservice/" not in url else url
-        return url, {"token": self.token}
+        if "/webservice/" not in url:
+            url = url.replace("/pluginfile.php", "/webservice/pluginfile.php", 1)
+        return url + ("&" if "?" in url else "?") + urlencode({"token": self.token})
 
     def fetch_text(self, fileurl):
-        url, params = self._authed(fileurl)
-        r = self.session.get(url, params=params, timeout=20)
-        r.raise_for_status()
-        r.encoding = r.encoding or "utf-8"
-        return r.text
+        r = request(self._authed(fileurl))
+        return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace")
 
     def download(self, fileurl, target: Path, timemodified=0):
         """Lädt eine Datei in den Cache, falls sie dort fehlt oder veraltet ist."""
         if target.exists() and target.stat().st_mtime >= timemodified:
             return target
         target.parent.mkdir(parents=True, exist_ok=True)
-        url, params = self._authed(fileurl)
         tmp = target.with_suffix(target.suffix + ".part")
-        with self.session.get(url, params=params, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(tmp, "wb") as f:
-                for chunk in r.iter_content(1 << 16):
-                    f.write(chunk)
+        # Das Token nur an Moodle schicken, nie an fremde Server (Bilder in Beschreibungen)
+        r = request(self._authed(fileurl) if fileurl.startswith(SITE) else fileurl, timeout=60)
+        with open(tmp, "wb") as f:
+            while chunk := r.read(1 << 16):
+                f.write(chunk)
         tmp.rename(target)
         if timemodified:
             os.utime(target, (timemodified, timemodified))
         return target
+
+    def image(self, url):
+        """Bild aus einer Beschreibung in den Cache laden; gibt den Pfad zurück."""
+        name = url.split("?")[0].rsplit("/", 1)[-1]
+        suffix = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        target = CACHE_DIR / "img" / (hashlib.md5(url.encode()).hexdigest()[:16] + suffix[:6])
+        return self.download(url, target)
