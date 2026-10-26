@@ -1,5 +1,5 @@
 """Startet die TUI mit Testdaten in tmux und schneidet die Bildschirme mit: python tests/fake_run.py AUSGABEORDNER"""
-import os, struct, sys, time, zlib
+import os, struct, subprocess, sys, time, zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -12,6 +12,23 @@ def png(path, w=200, h=100):
     path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
                      + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
     return path
+
+
+# Kleinste PDF mit zwei Seiten und Text
+PDF = b"""%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R 5 0 R]/Count 2>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 4 0 R/Resources<</Font<</F1 6 0 R>>>>>>endobj
+4 0 obj<</Length 44>>stream
+BT /F1 24 Tf 20 100 Td (Seite eins) Tj ET
+endstream endobj
+5 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 7 0 R/Resources<</Font<</F1 6 0 R>>>>>>endobj
+6 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+7 0 obj<</Length 44>>stream
+BT /F1 24 Tf 20 100 Td (Seite zwei) Tj ET
+endstream endobj
+trailer<</Root 1 0 R>>
+%%EOF"""
 
 
 class Fake:
@@ -28,12 +45,22 @@ class Fake:
                     {"id": 11, "name": "Blatt 3", "modname": "assign", "instance": 4, "contents": [], "dates": [{"label": "Fällig:", "timestamp": now + 3600}]},
                     {"id": 12, "name": "Skript", "modname": "resource", "contents": [{"type": "file", "filename": "skript.pdf", "filesize": 2_000_000, "timemodified": now + cid, "fileurl": "u"}]},
                     {"id": 13, "modname": "label", "description": "<p>Klausur am 20.02.</p><p><img src='https://m/bild.png' alt='Poster'></p><p>Darunter Text</p>", "contents": []}]},
-                {"name": "Woche 1", "summary": "", "modules": [{"id": 14, "name": "Folien", "modname": "folder", "contents": [{"type": "file", "filename": "a.pdf", "filepath": "/", "filesize": 10, "timemodified": 1, "fileurl": "u"}]}]}]
+                {"name": "Woche 1", "summary": "", "modules": [{"id": 14, "name": "Folien", "modname": "folder", "contents": [{"type": "file", "filename": "a.pdf", "filepath": "/", "filesize": 10, "timemodified": 1, "fileurl": "u"}]},
+                    {"id": 15, "name": "La ropa", "modname": "resource", "contents": [{"type": "file", "filename": "ropa.jpeg", "filesize": 85_000, "timemodified": 1, "fileurl": "u"}]}]}]
     def assignments(self, cid): return {11: {"id": 4, "name": "Blatt 3", "duedate": now + 3600, "intro": "<p>Aufgaben</p>"}}
     def submission_status(self, a): return {"lastattempt": {"submission": {"status": "new"}}}
     def forum_discussions(self, f): return [{"name": "Klausurtermin", "discussion": 7, "numreplies": 2, "timemodified": now}]
     def discussion_posts(self, d): return [{"author": {"fullname": "Prof"}, "timecreated": now, "message": "<p>Am 20.02.</p>"}]
-    def download(self, url, target, timemodified=0): return png(Path(os.environ["FAKE_DIR"]) / "datei.png")
+    def download(self, url, target, timemodified=0):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        src = png(Path(os.environ["FAKE_DIR"]) / "datei.png")
+        if target.suffix == ".jpeg":
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), str(target)])
+        elif target.suffix == ".pdf":
+            target.write_bytes(PDF)
+        else:
+            target.write_bytes(src.read_bytes())
+        return target
     def image(self, url): return png(Path(os.environ["FAKE_DIR"]) / "bild.png")
 
 
@@ -59,5 +86,13 @@ keys("Down", "Down"); shot("hinweis-mit-bild", out)
 keys("Escape", "Tab", "Enter"); shot("frist-im-kurs", out)
 keys("c", wait=0.3); keys("H", "a", "l", "l", "o", "Space", "ü"); shot("chat", out)
 keys("Escape", "q", wait=0.5)
-print("läuft noch:", bool(__import__("tmux").tmux("has-session", "-t", "moodle-tui-test")))
 stop()
+
+# Dateien anzeigen: einmal ohne kitty (Text/Ersatz), einmal mit TERM=xterm-kitty (Platzhalterzeichen)
+for term in ("xterm-256color", "xterm-kitty"):
+    start(f"cd {Path(__file__).resolve().parent.parent} && env FAKE_DIR={out} TERM={term} {sys.executable} {Path(__file__).resolve()} --app")
+    keys("Enter", wait=1)
+    keys(*["Down"] * 5, "Enter", wait=0.5)  # Woche 1 aufklappen
+    keys("Down", "Down", "Enter", wait=2); shot(f"jpeg-{term}", out)
+    keys("Up", "Enter", "Down", "Enter", wait=3); shot(f"pdf-{term}", out)
+    keys("q"); stop()

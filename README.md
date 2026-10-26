@@ -40,7 +40,9 @@ und registrieren: `xdg-mime default moodle-tui-login.desktop x-scheme-handler/mo
 - `c` – optional: Chat mit Claude über den Kursinhalt. Nur aktiv, wenn die `claude`-CLI installiert ist; sonst (oder mit `MOODLE_TUI_CHAT=0`) fehlt die Taste einfach.
 - `moodle dump …` – rein lesender Zugriff für Skripte.
 
-Dateien werden nach `~/.cache/moodle-tui/files` geladen und mit `xdg-open` geöffnet.
+Dateien werden nach `~/.cache/moodle-tui/files` geladen und in der TUI angezeigt: Bilder und PDF-Seiten als Bild
+(kitty; JPEG & Co. über `vipsthumbnail` oder `ffmpeg`, PDF über `pdftoppm`), sonst PDF-Text (`pdftotext`) bzw. Textdateien.
+Andere Programme öffnen sich nur mit `o` (Standardprogramm/Browser) oder per Klick auf einen Link.
 
 Bedienung mit Tastatur oder Maus (Klick, Mausrad, Links und Fußzeile anklickbar). Bilder in Beschreibungen
 zeigt kitty direkt an (PNG, über das Grafikprotokoll); sonst steht dort „🖼 Name“ – ein Klick öffnet das Bild.

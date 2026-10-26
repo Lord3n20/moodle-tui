@@ -3,6 +3,7 @@
 import html
 import json
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -14,6 +15,10 @@ from .util import Doc, fmt_size, fmt_time, html_lines
 
 NEW = "●"
 HINT = "di"  # Stil für Bedienhinweise
+IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg", ".heic", ".avif"}
+TEXT_TYPES = {".txt", ".md", ".csv", ".tsv", ".py", ".java", ".c", ".h", ".cpp", ".js", ".tex", ".json", ".xml",
+              ".yml", ".yaml", ".log", ".r", ".m", ".sql", ".sh"}
+PDF_BATCH = 6  # Seiten je pdftoppm-Aufruf; nach jedem Stapel wird die Anzeige ergänzt
 
 
 def txt(value):
@@ -275,7 +280,7 @@ class HomeScreen(ui.Screen):
 class CourseScreen(ui.Screen):
     bindings = [
         ("escape,backspace", "Zurück", "back"),
-        ("o", "Im Browser", "open_browser"),
+        ("o", "Extern öffnen", "open_browser"),
         ("c", "Claude fragen", "chat"),
         ("a", "Alles gesehen", "mark_all"),
         ("r", "Neu laden", "refresh"),
@@ -285,6 +290,7 @@ class CourseScreen(ui.Screen):
              "quiz": "❓", "label": "ℹ", "subsection": "📂", "opencast": "🎬", "lti": "🎬"}
 
     def __init__(self, course, focus_cmid=None):
+        self.token = 0  # zählt Anzeigen hoch; späte Ergebnisse für eine alte Anzeige werden verworfen
         self.course = course
         self.focus_cmid = focus_cmid
         self.sections = []
@@ -342,7 +348,7 @@ class CourseScreen(ui.Screen):
         if self.new:
             doc.gap()
             doc.line((f"{len(self.new)} neue/geänderte Einträge", "b"), (f" ({NEW})", "n"))
-        doc.para("Enter: öffnen · o: im Browser · a: alles als gesehen markieren · Esc: zurück", HINT)
+        doc.para("Enter: anzeigen · o: extern öffnen (Browser/Standardprogramm) · a: alles als gesehen markieren · Esc: zurück", HINT)
         self.detail.set(doc.lines)
         if self.focus_node:
             tree.move_cursor(self.focus_node)
@@ -396,8 +402,19 @@ class CourseScreen(ui.Screen):
 
     # ----- Anzeige
 
-    def show(self, doc):
-        self.detail.set(doc.lines)
+    def show(self, doc, token=None, keep=False):
+        """Zeigt doc an. Mit token nur, wenn seitdem nichts anderes angezeigt wurde; gibt das Token zurück."""
+        if token is None:
+            self.token += 1
+        elif token != self.token:
+            return None
+        self.detail.set(doc.lines, keep=keep)
+        return self.token
+
+    def load(self, title, fn, *args):
+        """Zeigt „Lade …“ und führt fn(token, *args) im Hintergrund aus."""
+        token = self.show(Doc().heading(title).para("Lade …", HINT))
+        self.app.thread(fn, token, *args)
 
     def module_doc(self, m):
         doc = Doc().heading(txt(m.get("name", "")))
@@ -419,12 +436,12 @@ class CourseScreen(ui.Screen):
                 f = files[0]
                 doc.gap()
                 doc.line((f["filename"], "c"), (f" · {fmt_size(f.get('filesize', 0))} · {fmt_time(f.get('timemodified'))}", ""))
-                doc.para("Enter: öffnen", HINT)
+                doc.para("Enter: anzeigen · o: mit Standardprogramm öffnen", HINT)
             elif m["modname"] == "url" and m.get("contents"):
                 url = m["contents"][0]["fileurl"]
                 doc.gap()
                 doc.line((url, "", url))
-                doc.para("Enter: im Browser öffnen", HINT)
+                doc.para("o oder Klick auf den Link: im Browser öffnen", HINT)
             elif m["modname"] in ("page", "assign", "forum"):
                 doc.para("Enter: Inhalt laden", HINT)
             elif m["modname"] not in ("label", "folder", "resource"):
@@ -434,7 +451,7 @@ class CourseScreen(ui.Screen):
             f = data["file"]
             self.show(Doc().heading(f["filename"])
                       .para(f"{fmt_size(f.get('filesize', 0))} · {fmt_time(f.get('timemodified'))}")
-                      .para("Enter: öffnen", HINT))
+                      .para("Enter: anzeigen · o: mit Standardprogramm öffnen", HINT))
 
     def selected(self, node):
         data = node.data
@@ -442,20 +459,18 @@ class CourseScreen(ui.Screen):
         if kind in ("module", "file") and data["module"]["id"] in self.new:
             self.mark_seen(data["module"], node if kind == "module" else node.parent)
         if kind == "file":
-            self.app.thread(self.open_file, data["file"])
+            self.load(data["file"]["filename"], self.load_file, data["file"])
         elif kind == "discussion":
-            self.app.thread(self.load_discussion, data["discussion"])
+            self.load(txt(data["discussion"]["name"]), self.load_discussion, data["discussion"])
         elif kind == "module":
             m = data["module"]
             files = [c for c in m.get("contents", []) if c.get("type") == "file"]
             if m["modname"] == "resource" and len(files) == 1:
-                self.app.thread(self.open_file, files[0])
-            elif m["modname"] == "url" and m.get("contents"):
-                open_external(m["contents"][0]["fileurl"])
+                self.load(files[0]["filename"], self.load_file, files[0])
             elif m["modname"] == "page":
-                self.app.thread(self.load_page, m)
+                self.load(txt(m["name"]), self.load_page, m)
             elif m["modname"] == "assign":
-                self.app.thread(self.load_assignment, m)
+                self.load(txt(m["name"]), self.load_assignment, m)
             elif m["modname"] == "forum" and not node.loaded:
                 node.loaded = True
                 self.app.thread(self.load_forum, node, m)
@@ -489,9 +504,15 @@ class CourseScreen(ui.Screen):
         self.build_tree(self.sections, self.assignments)
 
     def open_browser(self):
+        """o: Dateien mit dem Standardprogramm, alles andere im Browser öffnen."""
         node = self.tree.cursor_node
         data = node.data if node else {}
-        if "discussion" in data:
+        files = [c for c in data.get("module", {}).get("contents", []) if c.get("type") == "file"]
+        if data.get("kind") == "file":
+            self.app.thread(self.open_file, data["file"])
+        elif data.get("kind") == "module" and data["module"]["modname"] == "resource" and len(files) == 1:
+            self.app.thread(self.open_file, files[0])
+        elif "discussion" in data:
             open_external(f"{SITE}/mod/forum/discuss.php?d={data['discussion']['discussion']}")
         elif "module" in data and data["module"].get("url"):
             open_external(data["module"]["url"])
@@ -500,29 +521,80 @@ class CourseScreen(ui.Screen):
 
     # ----- Laden im Hintergrund (läuft in eigenem Thread)
 
-    def open_file(self, f):
+    def fetch_file(self, f):
         path = (f.get("filepath") or "/").strip("/")
         target = CACHE_DIR / "files" / str(self.course["id"]) / path / f["filename"]
+        return self.app.api.download(f["fileurl"], target, f.get("timemodified") or 0)
+
+    def open_file(self, f):
         self.app.post(self.app.notify, f"Öffne {f['filename']} …", False, 3)
         try:
-            self.app.api.download(f["fileurl"], target, f.get("timemodified") or 0)
+            target = self.fetch_file(f)
         except Exception as e:  # Netzfehler, HTTP-Fehler
             self.app.post(self.app.notify, f"Download fehlgeschlagen: {e}", True)
             return
         open_external(target)
 
-    def load_page(self, m):
+    def load_file(self, token, f):
+        """Zeigt eine Datei im Detailbereich: Bilder und PDF-Seiten als Bild (kitty), sonst Text."""
+        doc = Doc().heading(f["filename"]).para(f"{fmt_size(f.get('filesize', 0))} · {fmt_time(f.get('timemodified'))}")
+        try:
+            target = self.fetch_file(f)
+        except Exception as e:
+            self.app.post(self.show, doc.para(f"Download fehlgeschlagen: {e}", "e"), token)
+            return
+        suffix = target.suffix.lower()
+        inline = self.app.images.inline
+        if suffix in IMAGE_TYPES:
+            doc.gap().line((f["filename"], "I", str(target)))
+        elif suffix == ".pdf" and inline and shutil.which("pdftoppm"):
+            self.load_pdf_pages(token, doc, target)
+            return
+        elif suffix == ".pdf" and shutil.which("pdftotext"):
+            text = subprocess.run(["pdftotext", "-layout", str(target), "-"], capture_output=True, text=True).stdout
+            doc.gap().text(text.replace("\f", "\n").rstrip() or "(kein Text in der PDF – o: mit Standardprogramm öffnen)")
+        elif suffix in (".html", ".htm"):
+            doc.html(target.read_text(errors="replace"), f["fileurl"])
+        elif suffix in TEXT_TYPES:
+            doc.gap().text(target.read_text(errors="replace")[:200_000], "c")
+        else:
+            doc.para("Keine Vorschau für diesen Dateityp.", "i")
+        doc.para("o: mit Standardprogramm öffnen", HINT)
+        self.app.post(self.show, doc, token)
+
+    def load_pdf_pages(self, token, doc, target):
+        """Rendert die PDF stapelweise zu PNG-Seiten (im Cache) und ergänzt die Anzeige nach jedem Stapel."""
+        info = subprocess.run(["pdfinfo", str(target)], capture_output=True, text=True).stdout
+        pages = int(m.group(1)) if (m := re.search(r"^Pages:\s+(\d+)", info, re.M)) else 1
+        outdir = target.parent / f".{target.name}.seiten"
+        outdir.mkdir(exist_ok=True)
+        doc.para(f"{pages} Seiten · o: mit Standardprogramm öffnen", HINT)
+        for first in range(1, pages + 1, PDF_BATCH):
+            last = min(first + PDF_BATCH - 1, pages)
+            if not all((outdir / f"s-{n:04d}.png").exists() for n in range(first, last + 1)):
+                if token != self.token:  # inzwischen etwas anderes angezeigt: nicht weiter rendern
+                    return
+                subprocess.run(["pdftoppm", "-png", "-scale-to-x", "1200", "-scale-to-y", "-1", "-f", str(first),
+                                "-l", str(last), str(target), str(outdir / "tmp")], capture_output=True)
+                for png in outdir.glob("tmp-*.png"):  # pdftoppm nummeriert je nach Seitenzahl unterschiedlich breit
+                    png.rename(outdir / f"s-{int(png.stem.rsplit('-', 1)[1]):04d}.png")
+            for n in range(first, last + 1):
+                doc.gap().line((f"Seite {n}", "I", str(outdir / f"s-{n:04d}.png")))
+            self.app.post(self.show, doc, token, True)
+
+    def load_page(self, token, m):
         index = next((c for c in m.get("contents", []) if c.get("filename") == "index.html"), None)
         if not index:
+            self.app.post(self.show, self.module_doc(m), token)
             return
         doc = Doc().heading(txt(m["name"]))
         try:
             doc.lines += [[]] + html_lines(self.app.api.fetch_text(index["fileurl"]), index["fileurl"])
         except Exception as e:
             doc.para(f"Fehler beim Laden: {e}", "e")
-        self.app.post(self.show, doc)
+        self.app.post(self.show, doc, token)
 
-    def load_assignment(self, m):
+    def load_assignment(self, token, m):
         a = self.assignments.get(m["id"])
         if not a:
             return
@@ -549,7 +621,7 @@ class CourseScreen(ui.Screen):
         if files:
             doc.para("Anhänge: " + ", ".join(f["filename"] for f in files))
         doc.para("Abgeben geht über den Browser (o).", HINT)
-        self.app.post(self.show, doc)
+        self.app.post(self.show, doc, token)
 
     def load_forum(self, node, m):
         try:
@@ -571,11 +643,11 @@ class CourseScreen(ui.Screen):
 
         self.app.post(fill)
 
-    def load_discussion(self, d):
+    def load_discussion(self, token, d):
         try:
             posts = self.app.api.discussion_posts(d["discussion"])
         except MoodleError as e:
-            self.app.post(self.show, Doc().para(f"Fehler: {e}", "e"))
+            self.app.post(self.show, Doc().para(f"Fehler: {e}", "e"), token)
             return
         doc = Doc().heading(txt(d["name"]))
         for p in posts:
@@ -583,7 +655,7 @@ class CourseScreen(ui.Screen):
             doc.rule()
             doc.line((author, "b"), (f" · {fmt_time(p.get('timecreated'))}", "d"))
             doc.html(p.get("message"))
-        self.app.post(self.show, doc)
+        self.app.post(self.show, doc, token)
 
 
 # --------------------------------------------------------------------------- App
@@ -604,11 +676,12 @@ class MoodleApp(ChatMixin, ui.App):
         self.push(HomeScreen())
 
     def open_link(self, url, image):
+        """Klick auf einen Link öffnet den Browser; Bilder (nur ohne kitty anklickbar) den Bildbetrachter."""
         if image:
-            path = self.images.files.get(url)
+            path = url if url.startswith("/") else self.images.files.get(url)
             if path and path != "loading":
                 open_external(path)
-                return
+            return
         open_external(url)
 
     def quit(self):
