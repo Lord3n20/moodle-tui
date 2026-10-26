@@ -5,17 +5,20 @@ Nur Python-Standardbibliothek (curses, http.client, html.parser), keine Abhängi
 
 ## Installation
 
+Keine Abhängigkeiten, also auch kein venv nötig:
+
 ```sh
-python -m venv ~/.local/share/moodle-tui/venv
-~/.local/share/moodle-tui/venv/bin/pip install git+https://github.com/Lord3n20/moodle-tui
+git clone https://github.com/Lord3n20/moodle-tui ~/.local/share/moodle-tui/src
 ```
 
 Startskript `~/.local/bin/moodle`:
 
 ```sh
 #!/bin/sh
-exec "$HOME/.local/share/moodle-tui/venv/bin/python" -m moodle_tui "$@"
+PYTHONPATH="$HOME/.local/share/moodle-tui/src" exec python3 -m moodle_tui "$@"
 ```
+
+Aktualisieren: `git -C ~/.local/share/moodle-tui/src pull`. (Alternativ geht weiterhin `pip install git+https://github.com/Lord3n20/moodle-tui`.)
 
 Für den Login den Link-Handler `~/.local/share/applications/moodle-tui-login.desktop` anlegen:
 
